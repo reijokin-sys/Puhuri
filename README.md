@@ -69,8 +69,9 @@ not as root:
 
 The main application and `puhurid` are confined. The remaining unconfined
 helper is the reason OpenStore's **automatic review rejects the click with
-`'unconfined' not allowed`**. The app is therefore **not published in
-OpenStore** as of 2026-10-17; the GitHub releases are the supported download.
+`'unconfined' not allowed`**. The OpenStore listing was removed on
+2026-10-17, so the app is **not available in OpenStore**; the GitHub releases
+are the supported download.
 Manual review is not being pursued for the current release.
 
 Native replacements were investigated. `Lomiri.Notifications` exists, but a
