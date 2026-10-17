@@ -386,6 +386,21 @@ def messages(thread, limit=50):
     return _backend.request("messages.list", {"thread": thread, "limit": int(limit)})
 
 
+def open_conversation(thread, limit=100, has_choice=False):
+    """Load a conversation and decide whether a fresh chat starts encrypted."""
+    result = messages(thread, limit)
+    if not result.get("ok"):
+        return result
+    rows = result.get("result") or []
+    return {
+        "ok": True,
+        "result": {
+            "messages": rows,
+            "defaultEncrypted": len(rows) == 0 and not bool(has_choice),
+        },
+    }
+
+
 def send(thread, text):
     return _backend.request("message.send", {"thread": thread, "text": text})
 

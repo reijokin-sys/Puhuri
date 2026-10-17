@@ -15,6 +15,7 @@ the protocol is an open standard, and the server can be your own.
 | 1:1 text | messages both ways, delivery receipts and "typing…" (XEP-0184/0085) |
 | Attachments | pictures and voice messages (XEP-0363), also as encrypted media (XEP-0454) |
 | OMEMO | end-to-end encryption (XEP-0384) with a fingerprint view; OMEMO 2 is planned |
+| Encryption default | a new conversation starts encrypted; an explicit plaintext choice is remembered, and a contact without OMEMO stays locked until you unlock it |
 | Archive | the server-side history and the copies from your other devices (XEP-0313/0280) |
 | Background | a systemd *user* service keeps the session alive or uses battery-saving polling; the push path (XEP-0357) is prepared for later |
 | Notifications | Lomiri notifications with the phone's configured message sound, and Puhuri's unread count lights the notifications indicator |
@@ -36,16 +37,17 @@ the protocol is an open standard, and the server can be your own.
 PUHURI_FEATURES=omemo sh tools/build-daemon.sh   # -> build/puhurid, build/puhuri-ctl
 
 # then the click (QML + Python + the built service, architecture "arm64")
-sh tools/build.sh                     # -> dist/fi.reijo.puhuri_0.1.0_arm64.click
+sh tools/build.sh                     # -> dist/fi.reijo.puhuri_0.1.1_arm64.click
 
 # both, and install over SSH on a phone
 PUHELIMEN_SALASANA=... PUHURI_FEATURES=omemo ./install.sh
 ```
 
-The click is self-contained: it carries the Rust service, its systemd unit
-template and a small unconfined URL helper that installs and starts the user
-service on first launch. The main messenger stays in its normal click
-AppArmor profile.
+The click is self-contained: it carries the Rust service and its systemd unit
+template. The XMPP daemon runs under an enforced click AppArmor profile, and
+the main messenger stays in its normal click profile. The only unconfined
+part is a short-lived URL helper that installs and starts the user service on
+first launch.
 
 ## Installing and removing
 

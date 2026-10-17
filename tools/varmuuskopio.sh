@@ -15,6 +15,7 @@
 set -eu
 
 PROJECT=$(cd "$(dirname "$0")/.." && pwd)
+WORKSPACE=$(cd "$PROJECT/../.." && pwd)
 SERIAL=${PUHELIN_SARJANUMERO:?aseta PUHELIN_SARJANUMERO}
 PAKETTI=${PUHURI_PAKETTI:-fi.reijo.puhuri}
 KOHDE=${PUHURI_VARMUUSKOPIO:-"$HOME/puhuri-varmuuskopio"}
@@ -22,7 +23,7 @@ PVM=$(date '+%Y-%m-%d_%H%M')
 HAKEMISTO="$KOHDE/$PVM"
 
 case "$HAKEMISTO" in
-    /home/reijo/workspace/*)
+    "$WORKSPACE"/*)
         echo "VIRHE: kohde on workspacen sisällä ($HAKEMISTO)." >&2
         echo "  Kopio sisältää OMEMO-yksityisavaimet ja salasanan - se ei kuulu" >&2
         echo "  git-repoon. Valitse kohde workspacen ulkopuolelta." >&2

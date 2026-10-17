@@ -68,11 +68,11 @@ MainView {
     property string pushService: ""
     property string currentThread: ""
     property string currentName: ""
-    /// Which conversations send encrypted: thread -> true. The copy here is
-    /// only what the interface reads quickly; the choice itself is the
-    /// service's to keep (`omemo.setEncrypted` / `omemo.encrypted`, the
-    /// `encrypted_threads` table) and is read back at every start, so a
-    /// restart does not quietly turn a conversation back to plaintext.
+    /// Which conversations send encrypted: thread -> true/false. An explicit
+    /// `false` is a real choice too - a new conversation defaults to
+    /// encryption, and a user who unlocks it must not be locked again when
+    /// the chat is reopened. The service keeps the choice
+    /// (`omemo.setEncrypted` / `omemo.encrypted`, `encrypted_threads`).
     property var encryptedThreads: ({})
     property var conversationsPageItem: null
     /// The conversation page on screen, so the recording state can be shown.
@@ -193,22 +193,29 @@ MainView {
             return
         appLog("uusi keskustelu")
         pageStack.pop()
-        root.openConversation(jid, name)
+        // A conversation started from the roster has no history yet: it
+        // defaults to encrypted. An existing chat with messages keeps the
+        // choice the service already has for it.
+        root.openConversation(jid, name, true)
     }
 
-    function openConversation(thread, name) {
+    function openConversation(thread, name, encryptIfNew) {
         if (!root.pythonReady)
             return
         root.currentThread = thread
         root.currentName = name
         root.busy = true
-        py.call("puhuri.messages", [thread, 100], function (result) {
+        var hasChoice = Object.prototype.hasOwnProperty.call(root.encryptedThreads, thread)
+        py.call("puhuri.open_conversation", [thread, 100, hasChoice], function (result) {
             root.busy = false
             if (root.applyError(result))
                 return
             // Only the differences: a conversation that is opened again keeps
             // its place, a different one replaces the rows.
-            Messages.apply(messageModel, result.result || [])
+            var payload = result.result || {}
+            Messages.apply(messageModel, payload.messages || [])
+            if (encryptIfNew === true && payload.defaultEncrypted === true)
+                root.setEncryption(thread, true, false)
             root.conversationPageItem = pageStack.push(conversationPage)
             if (root.conversationPageItem) {
                 root.conversationPageItem.typing = false
@@ -229,6 +236,20 @@ MainView {
                 if (draft && draft.thread === root.currentThread)
                     root.setDraft(draft)
             })
+            // A fresh chat is locked even when the contact publishes no
+            // OMEMO devices: the first send then fails instead of silently
+            // going out in the clear. Tell the user how to make that choice
+            // explicitly.
+            if (encryptIfNew === true && payload.defaultEncrypted === true) {
+                py.call("puhuri.omemo_devices", [thread], function (deviceResult) {
+                    if (!deviceResult || deviceResult.ok !== true)
+                        return
+                    var devices = deviceResult.result || []
+                    if (devices.length === 0)
+                        root.showError(thread + tr("error.noOmemoDevices")
+                                       + tr("error.unlockToSend"))
+                })
+            }
             py.call("puhuri.mark_read", [thread, ""], function () {})
         })
     }
@@ -253,18 +274,15 @@ MainView {
         return root.encryptedThreads[thread] === true
     }
 
-    function setEncryption(thread, on) {
+    function setEncryption(thread, on, updatePage) {
         // A fresh object every time: QML does not see a value changed inside
         // a var property, and the interface would not follow the choice.
         var next = {}
         for (var key in root.encryptedThreads)
             next[key] = root.encryptedThreads[key]
-        if (on)
-            next[thread] = true
-        else
-            delete next[thread]
+        next[thread] = on === true
         root.encryptedThreads = next
-        if (root.conversationPageItem)
+        if (updatePage !== false && root.conversationPageItem)
             root.conversationPageItem.encrypted = on
         // The choice is the service's to keep: an app restart must not turn a
         // chat back to plaintext without saying so.
@@ -283,8 +301,11 @@ MainView {
                 return
             var map = {}
             var list = result.result || []
-            for (var i = 0; i < list.length; i++)
-                map[list[i]] = true
+            for (var i = 0; i < list.length; i++) {
+                var choice = list[i]
+                if (choice && choice.thread)
+                    map[choice.thread] = choice.encrypted === true
+            }
             root.encryptedThreads = map
             if (root.conversationPageItem && root.currentThread)
                 root.conversationPageItem.encrypted = root.encryptionFor(root.currentThread)

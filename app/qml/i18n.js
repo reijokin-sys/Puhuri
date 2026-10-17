@@ -158,6 +158,7 @@ var strings = {
         // App-side errors and hints
         "error.noOmemoDevices": " does not publish OMEMO devices, so messages "
                                 + "cannot be encrypted",
+        "error.unlockToSend": " Tap the lock to send without encryption.",
         "error.connectionLost": "The connection was lost: ",
         "error.encryptOn": "Encryption on: ",
         "error.devices": " devices"
@@ -270,6 +271,7 @@ var strings = {
         "imagePicker.title": "Valitse kuva",
         "error.noOmemoDevices": " ei julkaise OMEMO-laitteita, joten viestejä ei "
                                 + "voi salata",
+        "error.unlockToSend": " Avaa lukko lähettääksesi salaamattomana.",
         "error.connectionLost": "Yhteys katkesi: ",
         "error.encryptOn": "salaus päälle: ",
         "error.devices": " laitetta"

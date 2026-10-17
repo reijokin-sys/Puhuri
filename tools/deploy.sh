@@ -116,7 +116,8 @@ remote \
      fi
      # `lomiri-app-launch` may abort when it is called from an ssh session
      # ("lost our connection with the registry"); the app starts anyway.
-     setsid lomiri-app-launch fi.reijo.puhuri_puhuri_0.1.0 </dev/null >/dev/null 2>&1 &
+     version=$(basename "$(readlink -f /opt/click.ubuntu.com/fi.reijo.puhuri/current)");
+     setsid lomiri-app-launch "fi.reijo.puhuri_puhuri_$version" </dev/null >/dev/null 2>&1 &
      for i in $(seq 1 200); do
          systemctl --user is-active --quiet puhurid.service && break
          sleep 0.1

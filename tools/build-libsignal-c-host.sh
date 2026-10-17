@@ -14,7 +14,7 @@ set -eu
 # Build libsignal-protocol-c + protobuf-c natively from the vendored source,
 # so the host (x86-64) tests link the same source as the phone.
 set -eu
-P=/home/reijo/workspace/ubuntu-touch/ubuntu-touch-puhuri
+P=$(cd "$(dirname "$0")/.." && pwd)
 SRC=$P/vendor/libsignal-protocol-c
 PB=$P/vendor/protobuf-c-1.5.1/protobuf-c
 OUT=$P/build/libsignal-c/host

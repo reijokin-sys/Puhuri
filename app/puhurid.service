@@ -8,8 +8,8 @@ Type=simple
 EnvironmentFile=-%h/.config/fi.reijo.puhuri/puhurid.env
 Environment=PUHURI_RESTART_AFTER_PURGE=1
 Environment=PUHURI_PURGE_UI_DIRS=1
-ExecStart=@PUHURI_ROOT@/lib/aarch64-linux-gnu/bin/puhurid --engine xmpp
-Restart=on-failure
+ExecStart=/usr/bin/aa-exec -p @PUHURI_PROFILE@ -- @PUHURI_ROOT@/lib/aarch64-linux-gnu/bin/puhurid --engine xmpp
+Restart=always
 RestartSec=5
 
 [Install]

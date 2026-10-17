@@ -13,6 +13,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -24,6 +25,9 @@ pub struct Server {
     #[allow(dead_code)]
     data_dir: PathBuf,
     clients: Arc<Mutex<Vec<Sender<String>>>>,
+    purge_marker: Option<PathBuf>,
+    exit_after_purge: bool,
+    purge_requested: Arc<AtomicBool>,
 }
 
 impl Server {
@@ -39,7 +43,16 @@ impl Server {
             store,
             data_dir,
             clients: Arc::new(Mutex::new(Vec::new())),
+            purge_marker: None,
+            exit_after_purge: false,
+            purge_requested: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub fn with_purge_marker(mut self, marker: Option<PathBuf>, exit_after: bool) -> Self {
+        self.purge_marker = marker;
+        self.exit_after_purge = exit_after;
+        self
     }
 
     pub fn run(self, socket_path: &Path) -> std::io::Result<()> {
@@ -97,6 +110,9 @@ impl Server {
             store: Arc::clone(&self.store),
             data_dir: self.data_dir.clone(),
             clients: Arc::clone(&self.clients),
+            purge_marker: self.purge_marker.clone(),
+            exit_after_purge: self.exit_after_purge,
+            purge_requested: Arc::clone(&self.purge_requested),
         })
     }
 
@@ -143,6 +159,13 @@ impl Server {
             let mut guard = writer.lock().unwrap();
             guard.write_all(response.as_bytes())?;
             guard.flush()?;
+            drop(guard);
+            if self.exit_after_purge
+                && self.purge_requested.swap(false, Ordering::SeqCst)
+            {
+                std::thread::sleep(Duration::from_millis(50));
+                std::process::exit(0);
+            }
         }
         Ok(())
     }
@@ -197,32 +220,14 @@ impl Server {
                 self.engine.disable_push()?;
                 self.engine.disconnect()?;
                 self.store.purge_local_data()?;
-                if std::env::var_os("PUHURI_PURGE_UI_DIRS").is_some() {
-                    crate::store::purge_ui_dirs(
-                        &crate::default_config_dir(),
-                        &crate::default_cache_dir(),
-                    )?;
-                }
-                // The installed service restarts after the answer has gone
-                // out. That closes SQLite and drops its page cache, which can
-                // otherwise still hold old pages in process memory.
-                if std::env::var_os("PUHURI_RESTART_AFTER_PURGE").is_some() {
-                    std::process::Command::new("systemd-run")
-                        .args([
-                            "--user",
-                            "--collect",
-                            "--unit=puhuri-purge-restart",
-                            "--on-active=1s",
-                            "/bin/systemctl",
-                            "--user",
-                            "restart",
-                            "puhurid.service",
-                        ])
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .spawn()
-                        .map_err(|error| format!("palvelun uudelleenkäynnistys epäonnistui: {error}"))?;
+                if let Some(marker) = &self.purge_marker {
+                    if let Some(parent) = marker.parent() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|error| format!("purge-merkinnän hakemisto: {error}"))?;
+                    }
+                    std::fs::write(marker, b"1\n")
+                        .map_err(|error| format!("purge-merkinnän kirjoitus: {error}"))?;
+                    self.purge_requested.store(true, Ordering::SeqCst);
                 }
                 Ok(json!({"ok": true}))
             }
@@ -393,7 +398,17 @@ impl Server {
             // The conversations that send encrypted: the choice is kept, so a
             // restart of the app does not quietly turn a chat back to
             // plaintext.
-            "omemo.encrypted" => Ok(json!(self.engine.encrypted_threads()?)),
+            "omemo.encrypted" => {
+                let choices: Vec<Value> = self
+                    .store
+                    .encryption_choices()
+                    .into_iter()
+                    .map(|(thread, encrypted)| {
+                        json!({"thread": thread, "encrypted": encrypted})
+                    })
+                    .collect();
+                Ok(json!(choices))
+            }
             "omemo.setEncrypted" => {
                 let thread = arg_str(request, "thread")?;
                 let encrypted = request
@@ -600,9 +615,6 @@ impl Server {
                     }
                     EngineEvent::MessageReceived(message) => {
                         eprintln!("{}", received_log_line(&message));
-                        if self.store.settings().notifications {
-                            crate::notify::notify(&message.sender, &message.text);
-                        }
                         self.broadcast(&Event::new("message.received", json!(message)));
                     }
                     EngineEvent::MessageSent(message) => {

@@ -102,7 +102,12 @@ fn main() {
         }
     }
 
-    let server = Server::new(engine, fake, store, data_dir);
+    let purge_marker = std::env::var_os("PUHURI_PURGE_REQUEST_DIR").map(|base| {
+        PathBuf::from(base).join("purge-ui-dirs")
+    });
+    let exit_after_purge = std::env::var_os("PUHURI_RESTART_AFTER_PURGE").is_some();
+    let server = Server::new(engine, fake, store, data_dir)
+        .with_purge_marker(purge_marker, exit_after_purge);
     if let Err(error) = server.run(&socket_path) {
         eprintln!("puhurid: palvelin pysähtyi: {error}");
         std::process::exit(1);

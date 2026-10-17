@@ -46,7 +46,11 @@ pub struct Store {
 ///   matched by the **id we put on the stanza ourselves** - the row id - which
 ///   is why the id stopped being the library's random one
 ///   (`docs/DECISIONS.md`, 2026-10-16).
-pub const SCHEMA_VERSION: i64 = 5;
+/// * **6 - encryption choices (2026-10-17)**: `encrypted_threads.encrypted`
+///   remembers an explicit "plaintext" choice as well as an encrypted one.
+///   New conversations can therefore default to encryption while a user's
+///   deliberate unlock survives reopening and restarting.
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// Open (or create) `puhuri.db` and bring its schema up to
 /// [`SCHEMA_VERSION`]. `Store` and `OmemoStore` both go through here, so they
@@ -178,6 +182,15 @@ fn upgrade_to_current(connection: &Connection) -> Result<(), String> {
                 )
                 .map_err(|error| error.to_string())?;
         }
+        let encryption_columns = columns("encrypted_threads")?;
+        if !encryption_columns.iter().any(|name| name == "encrypted") {
+            connection
+                .execute_batch(
+                    "ALTER TABLE encrypted_threads
+                     ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 1",
+                )
+                .map_err(|error| error.to_string())?;
+        }
         let after: i64 = connection
             .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
             .map_err(|error| error.to_string())?;
@@ -258,7 +271,8 @@ fn create_schema(connection: &Connection) -> Result<(), String> {
              -- app: a chat that silently goes back to plaintext after a
              -- restart is worse than one that never claimed encryption.
              CREATE TABLE IF NOT EXISTS encrypted_threads (
-                 thread TEXT PRIMARY KEY
+                 thread    TEXT PRIMARY KEY,
+                 encrypted INTEGER NOT NULL DEFAULT 1
              );",
         )
         .map_err(|error| error.to_string())?;
@@ -396,8 +410,9 @@ impl Store {
         message: &Message,
         conversation_name: &str,
         url: &str,
+        unread: bool,
     ) -> Result<(), String> {
-        Self::record_in(connection, message, conversation_name, false, None)?;
+        Self::record_in(connection, message, conversation_name, unread, None)?;
         connection
             .execute(
                 "UPDATE messages SET state = 'downloading', pending_url = ?2 WHERE id = ?1",
@@ -414,9 +429,10 @@ impl Store {
         message: &Message,
         conversation_name: &str,
         url: &str,
+        unread: bool,
     ) -> Result<(), String> {
         let connection = self.lock();
-        Self::record_downloading_in(&connection, message, conversation_name, url)
+        Self::record_downloading_in(&connection, message, conversation_name, url, unread)
     }
 
     /// The file has arrived: the placeholder becomes the real message.
@@ -629,7 +645,7 @@ impl Store {
     /// the next read asks for with `<after>`.
     ///
     /// It is deliberately not the stanza id we store per message: measured on
-    /// the phone 2026-10-11, `xmpp.fi` stamps a `<stanza-id>` on a *delivered*
+    /// the phone 2026-10-11, `example.org` stamps a `<stanza-id>` on a *delivered*
     /// message that its own archive then answers `item-not-found` for - only
     /// the id that came with a MAM `<result>` is a real archive id
     /// (`docs/DECISIONS.md`, L1b).
@@ -1124,7 +1140,9 @@ impl Store {
     /// The conversations that send encrypted, as stored.
     pub fn encrypted_threads(&self) -> Vec<String> {
         let connection = self.lock();
-        let mut statement = match connection.prepare("SELECT thread FROM encrypted_threads") {
+        let mut statement = match connection
+            .prepare("SELECT thread FROM encrypted_threads WHERE encrypted = 1")
+        {
             Ok(statement) => statement,
             Err(_) => return Vec::new(),
         };
@@ -1135,25 +1153,34 @@ impl Store {
         rows.filter_map(|row| row.ok()).collect()
     }
 
+    /// Every explicit encryption choice, including "plaintext".
+    pub fn encryption_choices(&self) -> Vec<(String, bool)> {
+        let connection = self.lock();
+        let mut statement = match connection
+            .prepare("SELECT thread, encrypted FROM encrypted_threads ORDER BY thread")
+        {
+            Ok(statement) => statement,
+            Err(_) => return Vec::new(),
+        };
+        let rows = match statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0))
+        }) {
+            Ok(rows) => rows,
+            Err(_) => return Vec::new(),
+        };
+        rows.filter_map(|row| row.ok()).collect()
+    }
+
     pub fn set_encrypted(&self, thread: &str, encrypted: bool) -> Result<(), String> {
         let connection = self.lock();
-        if encrypted {
-            connection
-                .execute(
-                    "INSERT OR REPLACE INTO encrypted_threads (thread) VALUES (?1)",
-                    params![thread],
-                )
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        } else {
-            connection
-                .execute(
-                    "DELETE FROM encrypted_threads WHERE thread = ?1",
-                    params![thread],
-                )
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        }
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO encrypted_threads (thread, encrypted)
+                 VALUES (?1, ?2)",
+                params![thread, encrypted],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     fn setting(&self, key: &str) -> Option<String> {
@@ -1363,24 +1390,6 @@ fn secure_remove(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Remove the click's configuration and cache from the unconfined service.
-/// The click's own AppArmor profile cannot unlink every Content Hub import
-/// (found on the phone 2026-10-17), while the service runs as the same user
-/// without that profile. Explicit paths keep tests away from the real home.
-pub fn purge_ui_dirs(config_dir: &Path, cache_dir: &Path) -> Result<(), String> {
-    for path in [config_dir, cache_dir] {
-        match secure_remove(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!("hakemiston {} poisto epäonnistui: {error}",
-                                   path.display()))
-            }
-        }
-    }
-    Ok(())
-}
-
 /// The settings key one contact's nickname lives under. The bare JID is the
 /// key rather than a row per contact, because the interface asks by address.
 fn nickname_key(bare: &str) -> String {
@@ -1460,6 +1469,47 @@ fn message(id: &str, thread: &str, ts: i64, outgoing: bool, text: &str) -> Messa
         (store, dir)
     }
 
+    /// The interface has to remember an explicit "not encrypted" choice too:
+    /// otherwise a new conversation that the user unlocks before its first
+    /// message would be locked again the next time it is opened.
+    #[test]
+    fn a_plaintext_choice_is_remembered_and_is_not_reported_as_encrypted() {
+        let (store, dir) = temporary_store("encryption-choice");
+        store.set_encrypted("secret@example.org", true).unwrap();
+        store.set_encrypted("plain@example.org", false).unwrap();
+
+        assert_eq!(
+            store.encrypted_threads(),
+            vec!["secret@example.org".to_string()]
+        );
+        let plain_choice: i64 = store
+            .lock()
+            .query_row(
+                "SELECT encrypted FROM encrypted_threads WHERE thread = 'plain@example.org'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(plain_choice, 0);
+        drop(store);
+
+        let reopened = Store::open(&dir).unwrap();
+        assert_eq!(
+            reopened.encrypted_threads(),
+            vec!["secret@example.org".to_string()]
+        );
+        let plain_choice: i64 = reopened
+            .lock()
+            .query_row(
+                "SELECT encrypted FROM encrypted_threads WHERE thread = 'plain@example.org'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(plain_choice, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// **Regressio, löydetty puhelimesta 2026-10-11.** Tietokanta, jonka on
     /// kirjoittanut L1:ä edeltävä versio, ei tunne `stanza_id`-saraketta:
     /// `CREATE TABLE IF NOT EXISTS` ei tee mitään, ja jos yksikäsitteinen
@@ -1488,19 +1538,19 @@ fn message(id: &str, thread: &str, ts: i64, outgoing: bool, text: &str) -> Messa
                      image INTEGER NOT NULL DEFAULT 0);
                  CREATE INDEX messages_thread_ts ON messages (thread, ts);
                  INSERT INTO messages (id, thread, ts, outgoing, sender, text, voice, image)
-                     VALUES ('old-1', 'kai@test', 5, 0, 'Maija', 'vanha viesti', 0, 0);",
+                     VALUES ('old-1', 'maija@test', 5, 0, 'Maija', 'vanha viesti', 0, 0);",
             )
             .unwrap();
         }
 
         // Avaus ei saa kaatua, ja vanha rivi on tallessa.
         let store = Store::open(&dir).unwrap();
-        assert_eq!(store.messages("kai@test", 10).len(), 1, "vanha rivi katosi");
+        assert_eq!(store.messages("maija@test", 10).len(), 1, "vanha rivi katosi");
 
         // Sarake on olemassa ja yksikäsitteinen indeksi toimii.
         let message = Message {
             id: "uusi-1".to_string(),
-            thread: "kai@test".to_string(),
+            thread: "maija@test".to_string(),
             outgoing: false,
             sender: "Maija".to_string(),
             text: "uusi viesti".to_string(),
@@ -1513,8 +1563,8 @@ fn message(id: &str, thread: &str, ts: i64, outgoing: bool, text: &str) -> Messa
             let connection = store.lock();
             Store::record_in(&connection, &message, "Maija", true, Some("s-1")).unwrap();
         }
-        assert!(store.has_stanza_id("kai@test", "s-1"));
-        assert!(!store.has_stanza_id("kai@test", "s-2"));
+        assert!(store.has_stanza_id("maija@test", "s-1"));
+        assert!(!store.has_stanza_id("maija@test", "s-2"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1554,9 +1604,10 @@ fn message(id: &str, thread: &str, ts: i64, outgoing: bool, text: &str) -> Messa
                  CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                  CREATE TABLE read_markers (thread TEXT PRIMARY KEY, ts INTEGER NOT NULL);
                  CREATE TABLE encrypted_threads (thread TEXT PRIMARY KEY);
+                 INSERT INTO encrypted_threads (thread) VALUES ('old@example.org');
                  INSERT INTO messages (id, thread, ts, outgoing, sender, text, voice, image,
                                        state, stanza, attempts)
-                     VALUES ('p-1', 'kai@test', 5, 1, 'minä', 'odottaa yhä', 0, 0,
+                     VALUES ('p-1', 'maija@test', 5, 1, 'minä', 'odottaa yhä', 0, 0,
                              'pending', '<message/>', 2);
                  PRAGMA user_version = 4;",
             )
@@ -1570,7 +1621,7 @@ fn message(id: &str, thread: &str, ts: i64, outgoing: bool, text: &str) -> Messa
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION, "versio ei päivittynyt");
 
-        let messages = store.messages("kai@test", 10);
+        let messages = store.messages("maija@test", 10);
         assert_eq!(messages.len(), 1, "vanha rivi katosi");
         assert!(!messages[0].delivered, "kuittaamaton rivi näkyy kuitattuna");
 
@@ -1586,13 +1637,25 @@ fn message(id: &str, thread: &str, ts: i64, outgoing: bool, text: &str) -> Messa
             .unwrap();
         assert_eq!((state.as_str(), attempts), ("pending", 2));
 
-        assert_eq!(store.mark_delivered("kai@test", "p-1").unwrap(), 1);
-        assert!(store.messages("kai@test", 10)[0].delivered);
+        // An older encrypted choice is still an encrypted choice after the
+        // table gains the explicit state column.
+        let encrypted: i64 = store
+            .lock()
+            .query_row(
+                "SELECT encrypted FROM encrypted_threads WHERE thread = 'old@example.org'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(encrypted, 1);
+
+        assert_eq!(store.mark_delivered("maija@test", "p-1").unwrap(), 1);
+        assert!(store.messages("maija@test", 10)[0].delivered);
         drop(store);
 
         // Opening it again changes nothing (the upgrade is idempotent).
         let store = Store::open(&dir).unwrap();
-        assert!(store.messages("kai@test", 10)[0].delivered);
+        assert!(store.messages("maija@test", 10)[0].delivered);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1606,7 +1669,12 @@ fn message(id: &str, thread: &str, ts: i64, outgoing: bool, text: &str) -> Messa
         let (store, dir) = temporary_store("lataus");
         let placeholder = message("in-1-att", "maija@example.org", 10, false, "Kuva");
         store
-            .record_downloading(&placeholder, "Maija", "https://127.0.0.1:9/olematon.jpg")
+            .record_downloading(
+                &placeholder,
+                "Maija",
+                "https://127.0.0.1:9/olematon.jpg",
+                true,
+            )
             .unwrap();
 
         // The row exists before the file, and it says so: the interface has
@@ -1615,6 +1683,11 @@ fn message(id: &str, thread: &str, ts: i64, outgoing: bool, text: &str) -> Messa
         assert_eq!(row.state, "downloading");
         assert!(row.attachment.is_none(), "tiedostoa ei ole vielä olemassa");
         assert_eq!(store.pending_downloads().len(), 1);
+        assert_eq!(
+            store.conversations()[0].unread,
+            1,
+            "live-liite ei nostanut unreadia"
+        );
 
         // Every session that missed the file counts one attempt...
         for expected in 1..5 {
@@ -2008,25 +2081,4 @@ fn message(id: &str, thread: &str, ts: i64, outgoing: bool, text: &str) -> Messa
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn purging_ui_dirs_removes_config_and_content_hub_cache() {
-        let root = std::env::temp_dir().join(format!(
-            "puhuri-ui-purge-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        let config = root.join("config/fi.reijo.puhuri");
-        let cache = root.join("cache/fi.reijo.puhuri/HubIncoming/2");
-        std::fs::create_dir_all(&config).unwrap();
-        std::fs::create_dir_all(&cache).unwrap();
-        std::fs::write(config.join("theme.conf"), "CANARY-CONFIG").unwrap();
-        std::fs::write(cache.join("m-ind-kayttaja.png"), "CANARY-CACHE").unwrap();
-
-        purge_ui_dirs(&config, &root.join("cache/fi.reijo.puhuri"))
-            .expect("käyttöliittymän hakemistojen poisto");
-
-        assert!(!config.exists());
-        assert!(!root.join("cache/fi.reijo.puhuri").exists());
-        let _ = std::fs::remove_dir_all(&root);
-    }
 }

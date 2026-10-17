@@ -1340,40 +1340,40 @@ mod tests {
         let bundle = peer.bundle().unwrap();
 
         let store = omemo.inner.lock().unwrap().store.clone();
-        store.store_devices("kai@test", &[7, 8]).unwrap();
+        store.store_devices("maija@test", &[7, 8]).unwrap();
         for device in [7, 8] {
             store
                 .store_bundle(
-                    "kai@test",
+                    "maija@test",
                     &Bundle {
                         device_id: device,
                         ..bundle.clone()
                     },
                 )
                 .unwrap();
-            store.store_session("kai@test", device, &[1, 2, 3], None).unwrap();
-            store.save_identity("kai@test", device, &[9u8; 33]).unwrap();
+            store.store_session("maija@test", device, &[1, 2, 3], None).unwrap();
+            store.save_identity("maija@test", device, &[9u8; 33]).unwrap();
         }
-        store.set_verified("kai@test", 7, true).unwrap();
-        assert_eq!(omemo.peer_bundles("kai@test").unwrap().len(), 2);
+        store.set_verified("maija@test", 7, true).unwrap();
+        assert_eq!(omemo.peer_bundles("maija@test").unwrap().len(), 2);
 
-        let removed = store.forget_device("kai@test", 7).unwrap();
+        let removed = store.forget_device("maija@test", 7).unwrap();
         assert!(removed >= 4, "rivejä poistui vain {removed}");
 
         let left: Vec<i32> = omemo
-            .peer_bundles("kai@test")
+            .peer_bundles("maija@test")
             .unwrap()
             .iter()
             .map(|bundle| bundle.device_id)
             .collect();
         assert_eq!(left, vec![8], "lähetys kohdistaisi yhä unohdettuun laitteeseen");
-        assert!(!store.contains_session("kai@test", 7).unwrap());
-        assert!(store.contains_session("kai@test", 8).unwrap());
-        assert!(store.trusted_identity("kai@test", 7).unwrap().is_none());
-        assert!(store.trusted_identity("kai@test", 8).unwrap().is_some());
-        assert!(!store.is_verified("kai@test", 7).unwrap());
-        assert!(!store.is_verified("kai@test", 8).unwrap());
-        assert_eq!(store.devices("kai@test").unwrap(), vec![8]);
+        assert!(!store.contains_session("maija@test", 7).unwrap());
+        assert!(store.contains_session("maija@test", 8).unwrap());
+        assert!(store.trusted_identity("maija@test", 7).unwrap().is_none());
+        assert!(store.trusted_identity("maija@test", 8).unwrap().is_some());
+        assert!(!store.is_verified("maija@test", 7).unwrap());
+        assert!(!store.is_verified("maija@test", 8).unwrap());
+        assert_eq!(store.devices("maija@test").unwrap(), vec![8]);
     }
 
     /// O6: a fingerprint the user checked is remembered, and a key that

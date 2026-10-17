@@ -15,7 +15,6 @@
 pub mod db;
 pub mod engine;
 pub mod failpoint;
-pub mod notify;
 pub mod protocol;
 pub mod server;
 pub mod store;
@@ -100,7 +99,7 @@ mod tests {
     #[test]
     fn an_installed_click_executable_maps_to_its_current_symlink() {
         let executable = std::path::Path::new(
-            "/opt/click.ubuntu.com/fi.reijo.puhuri/0.1.0/lib/aarch64-linux-gnu/bin/puhurid",
+            "/opt/click.ubuntu.com/fi.reijo.puhuri/0.1.1/lib/aarch64-linux-gnu/bin/puhurid",
         );
         assert_eq!(
             click_current_root(executable),

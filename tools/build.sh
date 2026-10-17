@@ -27,8 +27,9 @@ trap 'rm -rf "$work"' EXIT
 stage="$work/package"
 mkdir -p "$stage"
 cp app/manifest.json app/fi.reijo.puhuri.apparmor app/push.apparmor \
-   app/puhurid.service app/puhuri-service.apparmor \
-   app/puhuri-service.desktop app/puhuri-service.url-dispatcher \
+   app/puhurid.service app/puhuri-setup.apparmor app/puhuri-daemon.apparmor \
+   app/puhuri-setup.desktop app/puhuri-setup.url-dispatcher \
+   app/puhuri-daemon.desktop \
    app/push.json app/puhuri.desktop app/puhuri.py "$stage/"
 cp LICENSE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt "$stage/"
 # `app/Lomiri` carries Puhuri's own theme modules. They belong in the click's

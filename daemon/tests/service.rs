@@ -19,6 +19,7 @@ use std::time::Duration;
 struct TestService {
     socket: std::path::PathBuf,
     dir: std::path::PathBuf,
+    purge_marker: std::path::PathBuf,
 }
 
 fn start(name: &str) -> TestService {
@@ -38,7 +39,9 @@ fn start_with(name: &str, configure: impl FnOnce(&Store)) -> TestService {
     let store = Arc::new(Store::open(&dir).unwrap());
     configure(&store);
     let fake = Arc::new(FakeEngineHolder::new(Arc::clone(&store)));
-    let server = Server::new(fake.engine(), Some(Arc::clone(&fake)), store, dir.clone());
+    let purge_marker = dir.with_extension("purge-ui-dirs");
+    let server = Server::new(fake.engine(), Some(Arc::clone(&fake)), store, dir.clone())
+        .with_purge_marker(Some(purge_marker.clone()), false);
     let socket_for_thread = socket.clone();
     std::thread::spawn(move || {
         let _ = server.run(&socket_for_thread);
@@ -52,12 +55,14 @@ fn start_with(name: &str, configure: impl FnOnce(&Store)) -> TestService {
     TestService {
         socket,
         dir,
+        purge_marker,
     }
 }
 
 impl Drop for TestService {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.socket);
+        let _ = std::fs::remove_file(&self.purge_marker);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -207,7 +212,10 @@ fn the_whole_path_works_with_the_fake_engine() {
         json!({"thread": "harjoitus@puhuri.test", "encrypted": true}),
     ));
     let encrypted = result_of(call(&service.socket, 14, "omemo.encrypted", json!({})));
-    assert_eq!(encrypted, json!(["harjoitus@puhuri.test"]));
+    assert_eq!(
+        encrypted,
+        json!([{"thread": "harjoitus@puhuri.test", "encrypted": true}])
+    );
     result_of(call(
         &service.socket,
         15,
@@ -215,7 +223,10 @@ fn the_whole_path_works_with_the_fake_engine() {
         json!({"thread": "harjoitus@puhuri.test", "encrypted": false}),
     ));
     let encrypted = result_of(call(&service.socket, 16, "omemo.encrypted", json!({})));
-    assert_eq!(encrypted, json!([]));
+    assert_eq!(
+        encrypted,
+        json!([{"thread": "harjoitus@puhuri.test", "encrypted": false}])
+    );
 
     // Reading it clears the unread mark and asks the engine for a receipt.
     result_of(call(
@@ -373,6 +384,10 @@ fn deleting_all_local_data_empties_the_service() {
     assert!(!service.dir.join("account.json").exists());
     assert!(!attachment.exists());
     assert!(!service.dir.join("attachments").exists());
+    assert!(
+        service.purge_marker.exists(),
+        "indikaattorille ei jätetty purge-merkkiä"
+    );
 
     let nickname = result_of(call(
         &service.socket,
@@ -405,6 +420,7 @@ fn the_state_of_an_incoming_file_travels_over_the_socket() {
                 },
                 "Maija",
                 "https://127.0.0.1:9/olematon.jpg",
+                true,
             )
             .unwrap();
     });

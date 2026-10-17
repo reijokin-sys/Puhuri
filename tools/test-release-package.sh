@@ -24,8 +24,12 @@ printf '%s\n' "$manifest" | grep -q '"architecture": "arm64"' || {
     echo "FAIL: click ei ole arm64, vaikka se sisältää aarch64-palvelun" >&2
     exit 1
 }
-printf '%s\n' "$manifest" | grep -q '"puhuri-service"' || {
-    echo "FAIL: puhuri-service-hook puuttuu manifestista" >&2
+printf '%s\n' "$manifest" | grep -q '"puhuri-setup"' || {
+    echo "FAIL: puhuri-setup-hook puuttuu manifestista" >&2
+    exit 1
+}
+printf '%s\n' "$manifest" | grep -q '"puhuri-daemon"' || {
+    echo "FAIL: puhuri-daemon-hook puuttuu manifestista" >&2
     exit 1
 }
 
@@ -37,8 +41,11 @@ for path in \
     ./lib/aarch64-linux-gnu/bin/puhuri-ctl \
     ./lib/aarch64-linux-gnu/bin/puhuri-indicator \
     ./lib/aarch64-linux-gnu/bin/puhuri-service-setup \
-    ./puhuri-service.desktop \
-    ./puhuri-service.url-dispatcher \
+    ./puhuri-daemon.apparmor \
+    ./puhuri-daemon.desktop \
+    ./puhuri-setup.apparmor \
+    ./puhuri-setup.desktop \
+    ./puhuri-setup.url-dispatcher \
     ./puhurid.service
 do
     printf '%s\n' "$contents" | grep -qx "$path" || {
@@ -81,5 +88,28 @@ if printf '%s\n' "$main_profile" | grep -q '"template": "unconfined"'; then
     echo "FAIL: pääsovellus ei saa olla unconfined" >&2
     exit 1
 fi
+daemon_profile=$(ar p "$PACKAGE" data.tar.gz | tar -xzO ./puhuri-daemon.apparmor)
+if printf '%s\n' "$daemon_profile" | grep -q '"template": "unconfined"'; then
+    echo "FAIL: daemon ei saa olla unconfined" >&2
+    exit 1
+fi
+printf '%s\n' "$daemon_profile" | grep -q '"networking"' || {
+    echo "FAIL: daemon-profiililta puuttuu networking" >&2
+    exit 1
+}
+setup_profile=$(ar p "$PACKAGE" data.tar.gz | tar -xzO ./puhuri-setup.apparmor)
+printf '%s\n' "$setup_profile" | grep -q '"template": "unconfined"' || {
+    echo "FAIL: setup-helperin pitää olla erikseen merkitty unconfined" >&2
+    exit 1
+}
+unit=$(ar p "$PACKAGE" data.tar.gz | tar -xzO ./puhurid.service)
+printf '%s\n' "$unit" | grep -q '/usr/bin/aa-exec -p ' || {
+    echo "FAIL: puhurid.service ei käytä confined daemonprofiilia" >&2
+    exit 1
+}
+printf '%s\n' "$unit" | grep -q '^Restart=always$' || {
+    echo "FAIL: puhurid.service ei käynnisty uudelleen puhtaan lopetuksen jälkeen" >&2
+    exit 1
+}
 
 echo "PASS: click sisältää palvelun, binäärit ja täyden lisenssipaketin"

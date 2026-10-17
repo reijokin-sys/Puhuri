@@ -9,6 +9,7 @@
 #       Lomiri.Components) was found, so the check is here now.
 set -eu
 
+PROJECT=$(cd "$(dirname "$0")/.." && pwd)
 SERIAL=${PUHELIN_SARJANUMERO:?aseta PUHELIN_SARJANUMERO}
 HOST=${PHONE_HOST:?aseta PHONE_HOST}
 KEY=${PHONE_KEY:?aseta PHONE_KEY}
@@ -41,7 +42,9 @@ remote 'export XDG_RUNTIME_DIR=/run/user/$(id -u); /opt/click.ubuntu.com/fi.reij
 
 if [ "$LAUNCH" = "1" ]; then
     echo "--- käynnistys"
-    remote 'export XDG_RUNTIME_DIR=/run/user/$(id -u); lomiri-app-launch fi.reijo.puhuri_puhuri_0.1.0'
+    VERSION=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' \
+        "$PROJECT/app/manifest.json")
+    remote "export XDG_RUNTIME_DIR=/run/user/\$(id -u); lomiri-app-launch fi.reijo.puhuri_puhuri_$VERSION"
 fi
 
 if [ "$QML" = "1" ]; then

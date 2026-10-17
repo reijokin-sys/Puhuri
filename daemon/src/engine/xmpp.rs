@@ -712,7 +712,7 @@ fn receive_omemo(
                     state: crate::engine::message_state_complete(),
                     attachment: None,
                 };
-                Store::record_downloading_in(connection, &placeholder, name, &url)?;
+                Store::record_downloading_in(connection, &placeholder, name, &url, unread)?;
                 downloads.push((sender.clone(), url, text, Some(row)));
                 return Ok(OmemoOutcome::Download);
             }
@@ -2794,7 +2794,7 @@ async fn handle_iq(
             if id == "mam-history" {
                 // **Found on the phone 2026-10-11**: the stanza id our own
                 // server stamps on a *delivered* message is not a valid archive
-                // id on `xmpp.fi` - a query with it as `<after>` answers
+                // id on `example.org` - a query with it as `<after>` answers
                 // `item-not-found`. Read the newest page instead and let the
                 // stanza-id dedup drop what we already have; the journal says
                 // so, and the archive id from the results takes over as the
@@ -4717,7 +4717,7 @@ fn queue_live_download(
         state: crate::engine::message_state_complete(),
         attachment: None,
     };
-    if let Err(error) = store.record_downloading(&placeholder, &name, &url) {
+    if let Err(error) = store.record_downloading(&placeholder, &name, &url, true) {
         shared.push(EngineEvent::Error {
             code: "store".to_string(),
             message: error,
@@ -4755,7 +4755,7 @@ fn queue_download(
             state: crate::engine::message_state_complete(),
             attachment: None,
         };
-        if let Err(error) = store.record_downloading(&message, &context.name, &url) {
+        if let Err(error) = store.record_downloading(&message, &context.name, &url, false) {
             shared.push(EngineEvent::Error {
                 code: "store".to_string(),
                 message: error,
@@ -5040,6 +5040,7 @@ mod tests {
                 },
                 "Maija",
                 url,
+                true,
             )
             .unwrap();
         let from = BareJid::from_str("maija@puhuri.test").unwrap();
@@ -5125,11 +5126,11 @@ mod tests {
     #[cfg(feature = "omemo")]
     #[test]
     fn an_aesgcm_address_is_read_the_way_it_is_written() {
-        let url = "aesgcm://http.xmpp.fi:5281/file_share/abc/RECORDING.m4a#\
+        let url = "aesgcm://http.example.org:5281/file_share/abc/RECORDING.m4a#\
                    fd60f6d738680959d0adc0d9028b8425088092c1be9d829737423ed642b80801\
                    ced1d1c0daa999b8a71264bf";
         let (address, iv, key) = aesgcm_parts(url).expect("the address is an aesgcm one");
-        assert_eq!(address, "https://http.xmpp.fi:5281/file_share/abc/RECORDING.m4a");
+        assert_eq!(address, "https://http.example.org:5281/file_share/abc/RECORDING.m4a");
         assert_eq!(iv.len(), 12);
         assert_eq!(key.len(), 32);
         assert_eq!(hex(&iv), "fd60f6d738680959d0adc0d9");
@@ -5137,7 +5138,7 @@ mod tests {
         assert_eq!(aesgcm_address(&address, &iv, &key).as_deref(), Some(url));
 
         // A plain address is not one of these.
-        assert!(aesgcm_parts("https://http.xmpp.fi/abc.m4a").is_none());
+        assert!(aesgcm_parts("https://http.example.org/abc.m4a").is_none());
         // The body is a file only when it is nothing but the address.
         assert_eq!(
             address_in_body("  aesgcm://host/path#00  ").as_deref(),
@@ -5422,7 +5423,7 @@ mod tests {
     fn a_failed_login_falls_back_to_the_saved_account() {
         let saved = Some(("maija@example.org".to_string(), "salasana".to_string()));
         let (jid, password) =
-            fallback_after_failed_login("reijo@invalid.invalid", saved.clone())
+            fallback_after_failed_login("maija@invalid.invalid", saved.clone())
                 .expect("tallennettu tili kelpaa paluukohteeksi");
         assert_eq!(jid.to_string(), "maija@example.org");
         assert_eq!(jid.domain().as_str(), "example.org");
@@ -5438,13 +5439,13 @@ mod tests {
         // Nothing is saved (the app is on the login page): nothing to fall
         // back to.
         assert_eq!(
-            fallback_after_failed_login("reijo@invalid.invalid", None),
+            fallback_after_failed_login("maija@invalid.invalid", None),
             None
         );
         // A saved account whose JID does not parse is not usable either.
         assert_eq!(
             fallback_after_failed_login(
-                "reijo@invalid.invalid",
+                "maija@invalid.invalid",
                 Some(("maija@".to_string(), "salasana".to_string()))
             ),
             None
@@ -5496,7 +5497,7 @@ mod tests {
 
         // `.invalid` never resolves, so the session never opens. The call
         // must come back anyway: the attempt runs in its own thread.
-        engine.connect("reijo@invalid.invalid", "vaara").unwrap();
+        engine.connect("maija@invalid.invalid", "vaara").unwrap();
         assert_eq!(
             store.account().map(|(jid, _)| jid).as_deref(),
             Some("maija@example.org"),

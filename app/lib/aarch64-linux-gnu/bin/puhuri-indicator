@@ -18,7 +18,9 @@ contact name is put there.
 
 import json
 import os
+import pathlib
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -28,7 +30,7 @@ import time
 import dbus
 import dbus.mainloop.glib
 import dbus.service
-from gi.repository import GLib
+from gi.repository import Gio, GLib
 
 APP_ID = "fi.reijo.puhuri"
 INDICATOR_BUS = "org.ayatana.indicator.messages"
@@ -38,6 +40,9 @@ HELPER_NAME = "fi.reijo.puhuri.indicator"
 SOURCE_ID = "inbox"
 POLL_SECONDS = 2
 REQUEST_TIMEOUT = 5.0
+APP_ICON = "/opt/click.ubuntu.com/fi.reijo.puhuri/current/assets/puhuri.png"
+DEFAULT_SOUND = "/usr/share/sounds/lomiri/notifications/Sintonia.ogg"
+NOTIFICATION_TIMEOUT_MS = 10000
 
 
 def click_root():
@@ -58,7 +63,7 @@ def app_version():
     if version:
         return version
     # The installed click has no manifest.json at its root: `current` is a
-    # symlink to the versioned directory (…/fi.reijo.puhuri/0.1.0).
+    # symlink to the versioned directory (…/fi.reijo.puhuri/<version>).
     installed = os.path.basename(os.path.realpath(click_root()))
     if installed and installed not in ("app", "current"):
         return installed
@@ -109,11 +114,136 @@ def summary_text():
     return "Uusi viesti" if language() == "fi" else "New message"
 
 
-def plain_label(value):
-    """Keep a peer-controlled contact name from becoming menu markup."""
+def app_dir(base, environment):
+    root = os.environ.get(environment) or os.path.join(os.path.expanduser("~"), base)
+    path = pathlib.Path(root)
+    return path if path.name == APP_ID else path / APP_ID
+
+
+def purge_marker_path():
+    root = os.environ.get("PUHURI_PURGE_REQUEST_DIR")
+    if root:
+        return pathlib.Path(root) / "purge-ui-dirs"
+    runtime = pathlib.Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp")
+    return runtime / APP_ID / "purge-ui-dirs"
+
+
+def remove_tree(path):
+    path = pathlib.Path(path)
+    if not path.exists():
+        return
+    for entry in path.rglob("*"):
+        if entry.is_file() and not entry.is_symlink():
+            try:
+                size = entry.stat().st_size
+                with entry.open("r+b") as handle:
+                    remaining = size
+                    block = b"\0" * 65536
+                    while remaining > 0:
+                        handle.write(block[:min(remaining, len(block))])
+                        remaining -= min(remaining, len(block))
+            except OSError:
+                pass
+    shutil.rmtree(path)
+
+
+def cleanup_after_purge(marker, config, cache):
+    marker = pathlib.Path(marker)
+    if not marker.exists():
+        return False
+    remove_tree(config)
+    remove_tree(cache)
+    marker.unlink(missing_ok=True)
+    return True
+
+
+def plain_text(value, limit):
+    """Keep peer-controlled text from becoming markup or control input."""
     text = re.sub(r"<[^>]*>", "", str(value or ""))
     text = re.sub(r"[<>\x00-\x1f\x7f]", "", text).strip()
-    return text[:80] or "Puhuri"
+    return text[:limit]
+
+
+def plain_label(value):
+    return plain_text(value, 80) or "Puhuri"
+
+
+def notification_sound():
+    configured = os.environ.get("PUHURI_NOTIFICATION_SOUND", "").strip()
+    if configured:
+        return configured
+    try:
+        result = subprocess.run(
+            ["gsettings", "get", "com.lomiri.touch.sound",
+             "incoming-message-sound"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        value = result.stdout.strip().strip("'\"")
+        if value and os.path.exists(value):
+            return value
+    except OSError:
+        pass
+    return DEFAULT_SOUND
+
+
+def notification_arguments(summary, body, sound):
+    return (
+        "Puhuri",
+        0,
+        APP_ICON,
+        summary,
+        body,
+        [],
+        {"sound-file": sound},
+        NOTIFICATION_TIMEOUT_MS,
+    )
+
+
+class NotificationTracker(object):
+    """Turn increasing per-conversation unread counts into one popup each."""
+
+    def __init__(self):
+        self._seen = {}
+
+    def observe(self, conversations, enabled=True):
+        popups = []
+        for conversation in conversations or []:
+            try:
+                thread = str(conversation.get("id") or "")
+                unread = int(conversation.get("unread") or 0)
+                newest = int(conversation.get("last_ts") or 0)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if not thread:
+                continue
+            previous = self._seen.get(thread)
+            self._seen[thread] = (unread, newest)
+            if previous is None or unread <= previous[0] or not enabled:
+                continue
+            body = plain_text(conversation.get("last_message"), 500)
+            popups.append((
+                plain_label(conversation.get("name")),
+                body or summary_text(),
+            ))
+        return popups
+
+
+class NotificationService(object):
+    def __init__(self, bus):
+        self._bus = bus
+
+    def notify(self, summary, body):
+        service = self._bus.get_object(
+            "org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications",
+        )
+        interface = dbus.Interface(
+            service, "org.freedesktop.Notifications")
+        interface.Notify(*notification_arguments(
+            summary, body, notification_sound()))
 
 
 class DaemonClient(object):
@@ -324,6 +454,11 @@ class Indicator(dbus.service.Object):
             self._source = None
             self.SourceRemoved(SOURCE_ID)
 
+    def reset_for_registration(self):
+        """Forget what was announced before the service was listening."""
+        self._source = None
+        self._messages = {}
+
     def _sync_messages(self, conversations):
         wanted = {}
         for conversation in conversations or []:
@@ -355,11 +490,17 @@ def main():
     bus = dbus.SessionBus()
     indicator = Indicator(bus)
     daemon = DaemonClient()
+    tracker = NotificationTracker()
+    notifications = NotificationService(bus)
     loop = GLib.MainLoop()
     registered = {"ok": False, "error": None}
 
     def registration_done():
         registered["ok"] = True
+        # The poll may already have announced the source and its rows before
+        # RegisterApplication completed; the service was not listening yet.
+        # Forget them so the next poll emits SourceAdded/MessageAdded again.
+        indicator.reset_for_registration()
 
     def registration_failed(error):
         # The call is asynchronous on purpose: the indicator service calls
@@ -370,22 +511,51 @@ def main():
               file=sys.stderr, flush=True)
         loop.quit()
 
-    try:
-        service = bus.get_object(INDICATOR_BUS, INDICATOR_SERVICE_PATH)
-        service.RegisterApplication(
-            desktop_id(), dbus.ObjectPath(OBJECT_PATH),
-            dbus_interface="org.ayatana.indicator.messages.service",
-            reply_handler=registration_done,
-            error_handler=registration_failed)
-    except Exception as error:
-        print("puhuri-indicator: viesti-indikaattoriin ei saada yhteyttä: %s" % error,
-              file=sys.stderr, flush=True)
-        return 1
+    def register_application():
+        try:
+            service = bus.get_object(INDICATOR_BUS, INDICATOR_SERVICE_PATH)
+            service.RegisterApplication(
+                desktop_id(), dbus.ObjectPath(OBJECT_PATH),
+                dbus_interface="org.ayatana.indicator.messages.service",
+                reply_handler=registration_done,
+                error_handler=registration_failed)
+        except Exception as error:
+            registration_failed(error)
+
+    def indicator_appeared(connection, name, owner, *args):
+        # The service may restart (it has crashed once after a menu update).
+        # It reloads the desktop-id list from GSettings, but the proxy to this
+        # process is only rebuilt when the application registers again.
+        register_application()
+
+    Gio.bus_watch_name(
+        Gio.BusType.SESSION, INDICATOR_BUS, Gio.BusNameWatcherFlags.NONE,
+        indicator_appeared, None)
 
     def poll():
         try:
+            cleanup_after_purge(
+                purge_marker_path(),
+                app_dir(".config", "XDG_CONFIG_HOME"),
+                app_dir(".cache", "XDG_CACHE_HOME"),
+            )
+        except Exception as error:
+            print("puhuri-indicator: purge-siivous epäonnistui: %s" % error,
+                  file=sys.stderr, flush=True)
+        try:
             conversations = daemon.request("conversations.list")
             unread, newest = unread_state(conversations)
+            try:
+                settings = daemon.request("settings.get")
+                enabled = bool(settings.get("notifications", True))
+            except Exception:
+                enabled = True
+            for summary, body in tracker.observe(conversations, enabled=enabled):
+                try:
+                    notifications.notify(summary, body)
+                except Exception as error:
+                    print("puhuri-indicator: ilmoituksen lähetys epäonnistui: %s"
+                          % error, file=sys.stderr, flush=True)
             indicator.update(unread, newest, conversations)
         except Exception as error:
             if not isinstance(error, (OSError, socket.timeout)):
