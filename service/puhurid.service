@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[Unit]
+Description=Puhuri - XMPP-taustapalvelu
+After=graphical-session.target
+
+[Service]
+Type=simple
+# Optional settings, e.g. the push bridge:
+#   PUHURI_PUSH_SERVICE=push.example.org
+# The file may be absent (the "-" prefix); see docs/PUSH.md. Without a bridge
+# the service keeps the device's push token but cannot register it, and the
+# polling mode is the fallback.
+EnvironmentFile=-%h/.config/fi.reijo.puhuri/puhurid.env
+# “Delete all local data” restarts the service after its answer, so SQLite and
+# its page cache cannot keep old rows in process memory.
+Environment=PUHURI_RESTART_AFTER_PURGE=1
+# The click is AppArmor-confined and cannot unlink every Content Hub import
+# from its cache. The unconfined service runs as the same user and removes the
+# click's config and cache as part of “delete all local data”.
+Environment=PUHURI_PURGE_UI_DIRS=1
+# The real XMPP engine; the fake engine is for development and is started by
+# hand (`puhurid --engine fake`).
+ExecStart=%h/.local/lib/fi.reijo.puhuri/puhurid --engine xmpp
+Restart=on-failure
+RestartSec=5
+# The messages stay on the device; nothing leaves it except through the
+# user's own XMPP server.
+
+[Install]
+WantedBy=default.target

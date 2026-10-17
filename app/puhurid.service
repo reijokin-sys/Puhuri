@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[Unit]
+Description=Puhuri - XMPP background service
+After=graphical-session.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/fi.reijo.puhuri/puhurid.env
+Environment=PUHURI_RESTART_AFTER_PURGE=1
+Environment=PUHURI_PURGE_UI_DIRS=1
+ExecStart=@PUHURI_ROOT@/lib/aarch64-linux-gnu/bin/puhurid --engine xmpp
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

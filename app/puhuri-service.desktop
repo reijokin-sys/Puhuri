@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Terminal=false
+Name=Puhuri service setup
+Comment=Starts the Puhuri background service from inside the click
+Exec=lib/aarch64-linux-gnu/bin/puhuri-service-setup %U
+Icon=assets/puhuri.png
+X-Lomiri-Touch=true
