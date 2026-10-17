@@ -178,6 +178,27 @@ def wav_bytes(pcm, rate=48_000, channels=1):
     return header + pcm
 
 
+def peer_is_allowed(uid, label, expected_uid):
+    """Only Puhuri's confined daemon may control the microphone."""
+    return (
+        uid == expected_uid
+        and label.startswith("fi.reijo.puhuri_puhuri-daemon_")
+        and "(enforce)" in label
+    )
+
+
+def connection_is_daemon(connection):
+    try:
+        raw = connection.getsockopt(
+            socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        pid, uid, _gid = struct.unpack("3i", raw)
+        with open("/proc/%d/attr/current" % pid, encoding="utf-8") as handle:
+            label = handle.read().strip()
+    except (OSError, struct.error):
+        return False
+    return peer_is_allowed(uid, label, os.getuid())
+
+
 class RecordingServer(object):
     """The unconfined side of voice recording.
 
@@ -210,6 +231,10 @@ class RecordingServer(object):
         while True:
             connection, _ = server.accept()
             with connection:
+                if not connection_is_daemon(connection):
+                    connection.sendall(
+                        b'{"ok": false, "error": "unauthorized"}\n')
+                    continue
                 try:
                     line = connection.makefile("rwb").readline()
                     request = json.loads(line.decode("utf-8"))

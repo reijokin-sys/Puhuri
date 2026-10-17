@@ -171,6 +171,15 @@ class IndicatorTest(unittest.TestCase):
         self.assertIsNone(indicator._source)
         self.assertEqual(indicator._messages, {})
 
+    def test_recording_socket_accepts_only_the_confined_daemon(self):
+        uid = os.getuid()
+        self.assertTrue(self.indicator.peer_is_allowed(
+            uid, "fi.reijo.puhuri_puhuri-daemon_0.1.2 (enforce)", uid))
+        self.assertFalse(self.indicator.peer_is_allowed(
+            uid, "unconfined", uid))
+        self.assertFalse(self.indicator.peer_is_allowed(
+            uid + 1, "fi.reijo.puhuri_puhuri-daemon_0.1.2 (enforce)", uid))
+
 
 if __name__ == "__main__":
     unittest.main()

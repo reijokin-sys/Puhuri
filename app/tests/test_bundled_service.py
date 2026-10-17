@@ -4,6 +4,7 @@
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -40,16 +41,16 @@ class BundledServiceTest(unittest.TestCase):
         helper = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(helper)
         with tempfile.TemporaryDirectory() as directory:
-            versioned = pathlib.Path(directory) / "0.1.2"
+            versioned = pathlib.Path(directory) / "0.1.3"
             versioned.mkdir()
             current = pathlib.Path(directory) / "current"
-            current.symlink_to("0.1.2")
+            current.symlink_to("0.1.3")
             root = str(current)
             unit = helper.service_unit_text(root)
 
             self.assertIn(
                 "ExecStart=/usr/bin/aa-exec -p "
-                "fi.reijo.puhuri_puhuri-daemon_0.1.2 -- "
+                "fi.reijo.puhuri_puhuri-daemon_0.1.3 -- "
                 f"{root}/lib/aarch64-linux-gnu/bin/puhurid --engine xmpp",
                 unit,
             )
@@ -77,16 +78,15 @@ class BundledServiceTest(unittest.TestCase):
         setup = json.loads((APP_DIR / "puhuri-setup.apparmor").read_text())
         self.assertNotEqual(daemon.get("template"), "unconfined")
         self.assertIn("networking", daemon["policy_groups"])
-        self.assertIn("audio", daemon["policy_groups"])
         self.assertEqual(setup.get("template"), "unconfined")
 
-    def test_release_versions_are_0_1_2(self):
+    def test_release_versions_are_0_1_3(self):
         manifest = json.loads((APP_DIR / "manifest.json").read_text())
         cargo = (APP_DIR.parent / "daemon/Cargo.toml").read_text()
         lock = (APP_DIR.parent / "daemon/Cargo.lock").read_text()
-        self.assertEqual(manifest["version"], "0.1.2")
-        self.assertIn('version = "0.1.2"', cargo)
-        self.assertIn('name = "puhurid"\nversion = "0.1.2"', lock)
+        self.assertEqual(manifest["version"], "0.1.3")
+        self.assertIn('version = "0.1.3"', cargo)
+        self.assertIn('name = "puhurid"\nversion = "0.1.3"', lock)
 
     def test_indicator_unit_keeps_the_systemd_runtime_specifier(self):
         loader = SourceFileLoader("puhuri_service_helper_test", str(SERVICE_HELPER))
@@ -102,6 +102,50 @@ class BundledServiceTest(unittest.TestCase):
             "EnvironmentFile=-%h/.config/fi.reijo.puhuri/puhurid.env",
             unit,
         )
+
+    def test_indicator_unit_has_systemd_sandboxing(self):
+        loader = SourceFileLoader("puhuri_service_helper_test", str(SERVICE_HELPER))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        unit = helper.indicator_unit_text("/opt/click.ubuntu.com/fi.reijo.puhuri/current")
+        for directive in (
+            "NoNewPrivileges=yes",
+            "PrivateTmp=yes",
+            "ProtectSystem=strict",
+            "ProtectHome=read-only",
+            "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK",
+            "ReadWritePaths=-%h/.local/share/fi.reijo.puhuri",
+            "ReadWritePaths=-%h/.config/fi.reijo.puhuri",
+            "ReadWritePaths=-%h/.cache/fi.reijo.puhuri",
+        ):
+            self.assertIn(directive, unit)
+
+    def test_setup_helper_does_not_follow_a_symlinked_temp_file(self):
+        loader = SourceFileLoader("puhuri_service_helper_test", str(SERVICE_HELPER))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        with tempfile.TemporaryDirectory() as directory:
+            target = pathlib.Path(directory) / "target"
+            target.write_text("keep", encoding="utf-8")
+            unit = pathlib.Path(directory) / "puhurid.service"
+            predictable = pathlib.Path(str(unit) + ".tmp.%d" % os.getpid())
+            predictable.symlink_to(target)
+            helper.write_unit(str(unit), "safe\n")
+            self.assertEqual(target.read_text(encoding="utf-8"), "keep")
+            self.assertEqual(unit.read_text(encoding="utf-8"), "safe\n")
+
+    def test_setup_helper_rejects_an_arbitrary_root(self):
+        loader = SourceFileLoader("puhuri_service_helper_test", str(SERVICE_HELPER))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        self.assertEqual(
+            helper.allowed_root("/opt/click.ubuntu.com/fi.reijo.puhuri/0.1.3"),
+            "/opt/click.ubuntu.com/fi.reijo.puhuri/0.1.3",
+        )
+        self.assertIsNone(helper.allowed_root("/tmp/not-puhuri"))
 
     def test_first_connection_dispatches_the_sandboxed_setup_helper(self):
         self.puhuri._service_started = False
