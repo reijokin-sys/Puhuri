@@ -44,10 +44,40 @@ PUHELIMEN_SALASANA=... PUHURI_FEATURES=omemo ./install.sh
 ```
 
 The click is self-contained: it carries the Rust service and its systemd unit
-template. The XMPP daemon runs under an enforced click AppArmor profile, and
-the main messenger stays in its normal click profile. The only unconfined
-part is a short-lived URL helper that installs and starts the user service on
-first launch.
+template. The XMPP daemon runs under an enforced click AppArmor profile with
+only the `networking` policy group, and the main messenger stays in its
+normal click profile.
+
+## Confinement and known limitations
+
+Puhuri currently has two unconfined components. Both run as the phone user,
+not as root:
+
+* `puhuri-setup` is a short-lived click URL helper. It installs and starts
+  the user systemd units. Ubuntu Touch provides no confined route for
+  installing a user service, so this helper remains unconfined. It accepts
+  only the installed click root, uses absolute command paths and a minimal
+  environment, and writes units through a safe temporary file.
+* `puhuri-indicator` is a long-running systemd user service outside the
+  click AppArmor profile. It keeps the Ayatana messaging-menu indicator,
+  sends notification previews and records voice messages through
+  PulseAudio. Its recording socket accepts commands only from the confined
+  `puhuri-daemon` profile, checked with `SO_PEERCRED` and the AppArmor
+  label. It does not own the XMPP connection, account credentials, message
+  database or OMEMO private keys, but it does see notification previews and
+  uses the microphone.
+
+The main application and `puhurid` are confined. The remaining unconfined
+helper is the reason OpenStore's **automatic review rejects the click with
+`'unconfined' not allowed`**. The app is therefore **not published in
+OpenStore** as of 2026-10-17; the GitHub releases are the supported download.
+Manual review is not being pursued for the current release.
+
+Native replacements were investigated. `Lomiri.Notifications` exists, but a
+confined background notification path is not available in the current click
+profile. QML in this Ubuntu Touch image has no `AudioRecorder` type, Python
+has neither PyQt5 nor GStreamer GI, and media-hub exposes playback only. A
+small C++/`QAudioRecorder` helper was considered but not implemented.
 
 ## Installing and removing
 
