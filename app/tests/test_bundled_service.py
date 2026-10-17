@@ -40,16 +40,16 @@ class BundledServiceTest(unittest.TestCase):
         helper = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(helper)
         with tempfile.TemporaryDirectory() as directory:
-            versioned = pathlib.Path(directory) / "0.1.1"
+            versioned = pathlib.Path(directory) / "0.1.2"
             versioned.mkdir()
             current = pathlib.Path(directory) / "current"
-            current.symlink_to("0.1.1")
+            current.symlink_to("0.1.2")
             root = str(current)
             unit = helper.service_unit_text(root)
 
             self.assertIn(
                 "ExecStart=/usr/bin/aa-exec -p "
-                "fi.reijo.puhuri_puhuri-daemon_0.1.1 -- "
+                "fi.reijo.puhuri_puhuri-daemon_0.1.2 -- "
                 f"{root}/lib/aarch64-linux-gnu/bin/puhurid --engine xmpp",
                 unit,
             )
@@ -77,15 +77,16 @@ class BundledServiceTest(unittest.TestCase):
         setup = json.loads((APP_DIR / "puhuri-setup.apparmor").read_text())
         self.assertNotEqual(daemon.get("template"), "unconfined")
         self.assertIn("networking", daemon["policy_groups"])
+        self.assertIn("audio", daemon["policy_groups"])
         self.assertEqual(setup.get("template"), "unconfined")
 
-    def test_release_versions_are_0_1_1(self):
+    def test_release_versions_are_0_1_2(self):
         manifest = json.loads((APP_DIR / "manifest.json").read_text())
         cargo = (APP_DIR.parent / "daemon/Cargo.toml").read_text()
         lock = (APP_DIR.parent / "daemon/Cargo.lock").read_text()
-        self.assertEqual(manifest["version"], "0.1.1")
-        self.assertIn('version = "0.1.1"', cargo)
-        self.assertIn('name = "puhurid"\nversion = "0.1.1"', lock)
+        self.assertEqual(manifest["version"], "0.1.2")
+        self.assertIn('version = "0.1.2"', cargo)
+        self.assertIn('name = "puhurid"\nversion = "0.1.2"', lock)
 
     def test_indicator_unit_keeps_the_systemd_runtime_specifier(self):
         loader = SourceFileLoader("puhuri_service_helper_test", str(SERVICE_HELPER))

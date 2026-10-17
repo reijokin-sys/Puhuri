@@ -24,7 +24,7 @@ def app_version(root):
                 return version
     except (OSError, ValueError):
         pass
-    return "0.1.1"
+    return "0.1.2"
 
 
 def daemon_profile(root):

@@ -22,6 +22,8 @@ use super::omemo::Omemo;
 use crate::store::Store;
 use futures::{FutureExt, StreamExt};
 use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -246,8 +248,6 @@ pub struct XmppEngine {
 
 struct Recording {
     thread: String,
-    child: std::process::Child,
-    buffer: Arc<Mutex<Vec<u8>>>,
     started: std::time::Instant,
 }
 
@@ -427,7 +427,35 @@ impl XmppEngine {
         Ok(message)
     }
 
-    /// Stop the recorder and write the WAV file.
+    /// Ask the unconfined indicator helper to record: the confined daemon
+    /// may use PulseAudio but may not execute `parec`.
+    fn recording_request(&self, command: &str) -> EngineResult<serde_json::Value> {
+        let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+        let path = std::path::Path::new(&runtime)
+            .join(crate::APP_ID)
+            .join("record.sock");
+        let mut stream = UnixStream::connect(&path)
+            .map_err(|error| format!("äänityspalveluun ei saada yhteyttä: {error}"))?;
+        stream
+            .write_all(format!("{{\"cmd\":\"{command}\"}}\n").as_bytes())
+            .map_err(|error| format!("äänityspalveluun ei voi kirjoittaa: {error}"))?;
+        let mut line = String::new();
+        BufReader::new(stream)
+            .read_line(&mut line)
+            .map_err(|error| format!("äänityspalvelu ei vastannut: {error}"))?;
+        let reply: serde_json::Value = serde_json::from_str(&line)
+            .map_err(|error| format!("äänityspalvelun vastaus ei ole JSONia: {error}"))?;
+        if reply.get("ok") != Some(&serde_json::Value::Bool(true)) {
+            return Err(reply
+                .get("error")
+                .and_then(|value| value.as_str())
+                .unwrap_or("äänitys epäonnistui")
+                .to_string());
+        }
+        Ok(reply)
+    }
+
+    /// Stop the helper's recorder and use the WAV it wrote.
     fn finish_recording(&self) -> EngineResult<(String, PathBuf, u32)> {
         let recording = self
             .recording
@@ -435,46 +463,22 @@ impl XmppEngine {
             .unwrap()
             .take()
             .ok_or_else(|| "äänitys ei ole käynnissä".to_string())?;
-        // SIGTERM first: the recorder flushes what it has.
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(recording.child.id() as i32, libc::SIGTERM);
-        }
-        let mut child = recording.child;
-        let _ = child.wait();
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        let mut pcm = recording.buffer.lock().unwrap().clone();
-        if pcm.is_empty() {
-            return Err("äänitys jäi tyhjäksi".to_string());
-        }
-        let per_second =
-            u64::from(VOICE_RATE) * u64::from(VOICE_CHANNELS) * 2;
-        let maximum = (VOICE_MAX_SECONDS * per_second) as usize;
-        // A recording nobody stopped cannot grow for ever.
-        if pcm.len() > maximum {
-            pcm.truncate(maximum);
-        }
-        let seconds = pcm.len() as u64 / per_second;
-        let wav = wav_file(&pcm, VOICE_RATE, VOICE_CHANNELS);
-        let directory = self
-            .store
-            .attachments_dir()
-            .map_err(|error| format!("liitekansion luonti epäonnistui: {error}"))?;
-        let path = directory.join(format!("{}.wav", now()));
-        std::fs::write(&path, &wav)
-            .map_err(|error| format!("äänen tallennus epäonnistui: {error}"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        }
+        let reply = self.recording_request("stop")?;
+        let path = reply
+            .get("path")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "äänityspalvelu ei kertonut tiedostoa".to_string())?;
+        let seconds = reply
+            .get("seconds")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0) as u32;
         eprintln!(
-            "puhurid: äänitys valmis ({seconds} s / {:.1} s kului, {} tavua)",
-            recording.started.elapsed().as_secs_f64(),
-            wav.len()
+            "puhurid: äänitys valmis ({seconds} s / {:.1} s kului)",
+            recording.started.elapsed().as_secs_f64()
         );
-        Ok((recording.thread, path, seconds as u32))
+        Ok((recording.thread, PathBuf::from(path), seconds))
     }
+
 }
 
 /// Voice messages are recorded as **48 kHz** mono PCM.
@@ -494,10 +498,6 @@ impl XmppEngine {
 /// work (`docs/TODO.md`).
 const VOICE_RATE: u32 = 48_000;
 const VOICE_CHANNELS: u16 = 1;
-/// A recording stops by itself after this, so a forgotten one cannot run (or
-/// grow) for ever.
-const VOICE_MAX_SECONDS: u64 = 120;
-
 /// In polling mode the session stays open this long after a login - enough
 /// for the presence, the archive read and what the server delivers straight
 /// away - and is then closed again. The wait between rounds is the setting
@@ -1059,38 +1059,11 @@ impl Engine for XmppEngine {
                 return Err("äänitys on jo käynnissä".to_string());
             }
         }
-        let mut child = std::process::Command::new("parec")
-            .args([
-                "--format=s16le",
-                &format!("--rate={VOICE_RATE}"),
-                &format!("--channels={VOICE_CHANNELS}"),
-            ])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .stdin(std::process::Stdio::null())
-            .spawn()
+        self.recording_request("start")
             .map_err(|error| format!("äänitystä ei saatu käyntiin: {error}"))?;
-        let buffer = Arc::new(Mutex::new(Vec::new()));
-        if let Some(mut stdout) = child.stdout.take() {
-            let buffer = Arc::clone(&buffer);
-            std::thread::spawn(move || {
-                use std::io::Read;
-                let mut chunk = [0u8; 8192];
-                while let Ok(read) = stdout.read(&mut chunk) {
-                    if read == 0 {
-                        break;
-                    }
-                    if let Ok(mut guard) = buffer.lock() {
-                        guard.extend_from_slice(&chunk[..read]);
-                    }
-                }
-            });
-        }
         eprintln!("puhurid: äänitys aloitettu");
         *self.recording.lock().unwrap() = Some(Recording {
             thread: thread.to_string(),
-            child,
-            buffer,
             started: std::time::Instant::now(),
         });
         Ok(())

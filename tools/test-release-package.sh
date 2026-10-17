@@ -97,6 +97,10 @@ printf '%s\n' "$daemon_profile" | grep -q '"networking"' || {
     echo "FAIL: daemon-profiililta puuttuu networking" >&2
     exit 1
 }
+printf '%s\n' "$daemon_profile" | grep -q '"audio"' || {
+    echo "FAIL: daemon-profiililta puuttuu audio (äänitys)" >&2
+    exit 1
+}
 setup_profile=$(ar p "$PACKAGE" data.tar.gz | tar -xzO ./puhuri-setup.apparmor)
 printf '%s\n' "$setup_profile" | grep -q '"template": "unconfined"' || {
     echo "FAIL: setup-helperin pitää olla erikseen merkitty unconfined" >&2
